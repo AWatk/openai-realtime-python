@@ -292,6 +292,13 @@ async def init_app():
 
     app.add_routes([web.post("/start_agent", start_agent)])
     app.add_routes([web.post("/stop_agent", stop_agent)])
+    app.add_routes([web.post("/set_instruction", set_instruction)])
+    app.add_routes([web.get("/get_instruction", get_instruction)])
+    app.add_routes([web.post("/set_voice", set_voice)])
+    app.add_routes([web.get("/get_voice", get_voice)])
+    app.add_routes([web.get("/get_transcript", get_transcript)])
+
+    
 
     return app
 
