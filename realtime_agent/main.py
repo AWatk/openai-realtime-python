@@ -222,9 +222,6 @@ async def get_instruction(request):
    return web.json_response(system_instruction_data)
 
 
-async def get_transcript(request):
-   return web.json_response(transcript_data)
-
 # Global dictionary to store the current voice configuration
 voice_data = {"voice": OpenAIVoices.ALLOY.value}
 
