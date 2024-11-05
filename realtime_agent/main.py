@@ -16,6 +16,10 @@ from agora_realtime_ai_api.rtc import RtcEngine, RtcOptions
 from .logger import setup_logger
 from .parse_args import parse_args, parse_args_realtimekit
 
+# Enumeration for OpenAI supported voices
+class OpenAIVoices(Enum):
+   ALLOY = "alloy"
+
 # Set up the logger with color and timestamp support
 logger = setup_logger(name=__name__, log_level=logging.INFO)
 
@@ -200,9 +204,61 @@ async def stop_agent(request):
         return web.json_response({"error": str(e)}, status=500)
 
 
+# Store system instructions
+system_instruction_data = {"system_instruction": ""}
+
+async def set_instruction(request):
+   try:
+       data = await request.json()
+       instruction = data.get("system_instruction", "")
+       system_instruction_data["system_instruction"] = instruction
+       return web.json_response({"status": "Instruction updated!"})
+   except Exception as e:
+       logger.error(f"Failed to update instruction: {e}")
+       return web.json_response({"error": str(e)}, status=500)
+
+
+async def get_instruction(request):
+   return web.json_response(system_instruction_data)
+
+
+async def get_transcript(request):
+   return web.json_response(transcript_data)
+
+# Global dictionary to store the current voice configuration
+voice_data = {"voice": OpenAIVoices.ALLOY.value}
+
+async def set_voice(request):
+   try:
+       # Parse the JSON data from the request
+       data = await request.json()
+       voice = data.get("voice", "")
+
+
+       # Check if the provided voice is a valid OpenAI voice
+       if voice not in [v.value for v in OpenAIVoices]:
+           return web.json_response({"error": f"Invalid voice: {voice}"}, status=400)
+
+
+       # Update the voice data
+       voice_data["voice"] = voice
+       return web.json_response({"status": "Voice updated!"})
+   except Exception as e:
+       logger.error(f"Failed to update voice: {e}")
+       return web.json_response({"error": str(e)}, status=500)
+  
+async def get_voice(request):
+   return web.json_response(voice_data)
+
+# Global dictionary to store the current transcript
+transcript_data = {"transcript": ""}
+
+async def get_transcript(request):
+   return web.json_response(transcript_data)
+
+
 # Dictionary to keep track of processes by channel name or UID
 active_processes = {}
-
 
 # Function to handle shutdown and process cleanup
 async def shutdown(app):
