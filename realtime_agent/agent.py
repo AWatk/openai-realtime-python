@@ -7,7 +7,6 @@ from typing import Any
 
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
 from attr import dataclass
-
 from agora_realtime_ai_api.rtc import Channel, ChatMessage, RtcEngine, RtcOptions
 
 from .logger import setup_logger
@@ -130,14 +129,49 @@ class RealtimeKitAgent:
         connection: RealtimeApiConnection,
         tools: ToolContext | None,
         channel: Channel,
+        queue: asyncio.Queue,
     ) -> None:
         self.connection = connection
         self.tools = tools
         self._client_tool_futures = {}
         self.channel = channel
+        self.queue = queue
         self.subscribe_user = None
         self.write_pcm = os.environ.get("WRITE_AGENT_PCM", "false") == "true"
         logger.info(f"Write PCM: {self.write_pcm}")
+
+    async def process_queue(self):
+        """Continuously process data from the queue."""
+        while True:
+            try:
+                # Wait for the next update in the queue
+                data = await self.queue.get()
+                logger.info(f"Processing data from queue: {data}")
+
+                # Process the update (e.g., update instructions or voice)
+                await self.update_session(data)
+
+                # Mark the queue task as done
+                self.queue.task_done()
+            except Exception as e:
+                logger.error(f"Error processing queue data: {e}")
+
+    async def update_session(self, data):
+        """Send session updates based on the received data."""
+        voice = data.get("voice")
+        instructions = data.get("instructions")
+
+        if voice or instructions:
+            logger.info(f"Updating session: voice={voice}, instructions={instructions}")
+            await self.connection.send_request(
+                SessionUpdate(
+                    session=SessionUpdateParams(
+                        voice=voice,
+                        instructions=instructions,
+                    )
+                )
+            )
+            logger.info("Session updated successfully.")
 
     async def run(self) -> None:
         try:
@@ -159,6 +193,17 @@ class RealtimeKitAgent:
             logger.info(f"Subscribing to user {self.subscribe_user}")
             await self.channel.subscribe_audio(self.subscribe_user)
 
+             # Start queue processing
+            asyncio.create_task(self.process_queue()).add_done_callback(log_exception)
+
+            disconnected_future = asyncio.Future[None]()
+            self.channel.on(
+                "connection_state_changed",
+                lambda conn, info, reason: self.on_connection_state_changed(
+                    conn, info, reason, disconnected_future
+                ),
+            )
+
             async def on_user_left(
                 agora_rtc_conn: RTCConnection, user_id: int, reason: int
             ):
@@ -169,8 +214,6 @@ class RealtimeKitAgent:
                     await self.channel.disconnect()
 
             self.channel.on("user_left", on_user_left)
-
-            disconnected_future = asyncio.Future[None]()
 
             def callback(agora_rtc_conn: RTCConnection, conn_info: RTCConnInfo, reason):
                 logger.info(f"Connection state changed: {conn_info.state}")
@@ -187,6 +230,22 @@ class RealtimeKitAgent:
                 log_exception
             )
 
+            self.custom_event = asyncio.Event() # stat of change in agent.py
+            async def on_custom_event() -> None:
+                logger.info("custom event")
+                #add logic for complex triggers (event should trigger periodically/under specific)
+
+                try:
+                    logger.info("Custom event triggered.")
+                    await self.update_voice_and_instructions()
+                except Exception as e:
+                    logger.error(f"Error in custom event logic: {e}")
+
+            self.custom_event.set()
+            asyncio.create_task(on_custom_event()).add_done_callback(log_exception)
+
+            logger.info("voice and instructions updated nicely")
+
             await disconnected_future
             logger.info("Agent finished running")
         except asyncio.CancelledError:
@@ -194,6 +253,18 @@ class RealtimeKitAgent:
         except Exception as e:
             logger.error(f"Error running agent: {e}")
             raise
+
+    async def update_voice_and_instructions(self) -> None:
+        await self.connection.send_request(
+            SessionUpdate(
+                session=SessionUpdateParams(
+                    voice=Voices.Alloy,
+                    instructions="Updated system instructions",
+                )
+            )
+        )
+        logger.info("Voice and instructions updated.")
+        
 
     async def rtc_to_model(self) -> None:
         while self.subscribe_user is None or self.channel.get_audio_frames(self.subscribe_user) is None:

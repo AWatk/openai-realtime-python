@@ -3,7 +3,8 @@ import asyncio
 import logging
 import os
 import signal
-from multiprocessing import Process
+from multiprocessing import Process, Queue
+
 
 from aiohttp import web
 from dotenv import load_dotenv
@@ -15,6 +16,7 @@ from .agent import InferenceConfig, RealtimeKitAgent
 from agora_realtime_ai_api.rtc import RtcEngine, RtcOptions
 from .logger import setup_logger
 from .parse_args import parse_args, parse_args_realtimekit
+from enum import Enum
 
 # Enumeration for OpenAI supported voices
 class OpenAIVoices(Enum):
@@ -64,6 +66,8 @@ def handle_agent_proc_signal(signum, frame):
     logger.info(f"Agent process received signal {signal.strsignal(signum)}. Exiting...")
     os._exit(0)
 
+active_processes = {}
+shared_queues = {}
 
 def run_agent_in_process(
     engine_app_id: str,
@@ -71,6 +75,7 @@ def run_agent_in_process(
     channel_name: str,
     uid: int,
     inference_config: InferenceConfig,
+    queue: Queue,
 ):  # Set up signal forwarding in the child process
     signal.signal(signal.SIGINT, handle_agent_proc_signal)  # Forward SIGINT
     signal.signal(signal.SIGTERM, handle_agent_proc_signal)  # Forward SIGTERM
@@ -86,6 +91,7 @@ def run_agent_in_process(
             ),
             inference_config=inference_config,
             tools=None,
+            queue=queue,
         )
     )
 
@@ -118,6 +124,9 @@ async def start_agent(request):
                 {"error": f"Agent already running for channel: {channel_name}"},
                 status=400,
             )
+        
+        queue = Queue()
+        shared_queues[channel_name] = queue
 
         system_message = ""
         if language == "en":
@@ -144,7 +153,7 @@ Your knowledge cutoff is 2023-10. You are a helpful, witty, and friendly AI. Act
         # Create a new process for running the agent
         process = Process(
             target=run_agent_in_process,
-            args=(app_id, app_cert, channel_name, uid, inference_config),
+            args=(app_id, app_cert, channel_name, uid, inference_config, queue),
         )
 
         try:
@@ -202,6 +211,27 @@ async def stop_agent(request):
     except Exception as e:
         logger.error(f"Failed to stop agent: {e}")
         return web.json_response({"error": str(e)}, status=500)
+    
+
+async def enqueue_instruction(request):
+    try:
+        data = await request.json()
+        channel_name = data.get("channel_name")
+        instructions = data.get("instructions")
+        voice = data.get("voice")
+
+        if channel_name not in shared_queues:
+            return web.json_response(
+                {"error": f"No active agent for channel: {channel_name}"}, status=404
+            )
+
+        # Add the data to the queue
+        queue = shared_queues[channel_name]
+        queue.put({"voice": voice, "instructions": instructions})
+        return web.json_response({"status": "Instruction added to queue."})
+    except Exception as e:
+        logger.error(f"Failed to enqueue instruction: {e}")
+        return web.json_response({"error": str(e)}, status=500)
 
 
 # Store system instructions
@@ -254,6 +284,7 @@ async def get_transcript(request):
    return web.json_response(transcript_data)
 
 
+
 # Dictionary to keep track of processes by channel name or UID
 active_processes = {}
 
@@ -268,6 +299,8 @@ async def shutdown(app):
             )
             await asyncio.to_thread(os.kill, process.pid, signal.SIGKILL)
             await asyncio.to_thread(process.join)  # Ensure process has terminated
+        active_processes.pop(channel_name, None)
+        shared_queues.pop(channel_name, None)  # Remove the queue
     active_processes.clear()
     logger.info("All processes terminated, shutting down server")
 
@@ -283,6 +316,8 @@ def handle_signal(signum, frame):
         loop.stop()
 
 
+
+
 # Main aiohttp application setup
 async def init_app():
     app = web.Application()
@@ -292,6 +327,7 @@ async def init_app():
 
     app.add_routes([web.post("/start_agent", start_agent)])
     app.add_routes([web.post("/stop_agent", stop_agent)])
+    app.router.add_post("/enqueue_instruction", enqueue_instruction)
     app.add_routes([web.post("/set_instruction", set_instruction)])
     app.add_routes([web.get("/get_instruction", get_instruction)])
     app.add_routes([web.post("/set_voice", set_voice)])
