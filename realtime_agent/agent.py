@@ -4,6 +4,7 @@ import logging
 import os
 from builtins import anext
 from typing import Any
+from asyncio import Queue
 
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
 from attr import dataclass
@@ -116,6 +117,7 @@ class RealtimeKitAgent:
                     connection=connection,
                     tools=tools,
                     channel=channel,
+                    queue=asyncio.Queue,
                 )
                 await agent.run()
 
