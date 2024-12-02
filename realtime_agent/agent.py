@@ -4,7 +4,7 @@ import logging
 import os
 from builtins import anext
 from typing import Any
-from asyncio import Queue
+import multiprocessing
 
 from agora.rtc.rtc_connection import RTCConnection, RTCConnInfo
 from attr import dataclass
@@ -77,6 +77,7 @@ class RealtimeKitAgent:
         options: RtcOptions,
         inference_config: InferenceConfig,
         tools: ToolContext | None,
+        queue: multiprocessing.Queue
     ) -> None:
         channel = engine.create_channel(options)
         await channel.connect()
@@ -117,7 +118,7 @@ class RealtimeKitAgent:
                     connection=connection,
                     tools=tools,
                     channel=channel,
-                    queue=asyncio.Queue,
+                    queue=queue,
                 )
                 await agent.run()
 
@@ -131,7 +132,7 @@ class RealtimeKitAgent:
         connection: RealtimeApiConnection,
         tools: ToolContext | None,
         channel: Channel,
-        queue: asyncio.Queue,
+        queue: multiprocessing.Queue,
     ) -> None:
         self.connection = connection
         self.tools = tools
@@ -147,14 +148,16 @@ class RealtimeKitAgent:
         while True:
             try:
                 # Wait for the next update in the queue
-                data = await self.queue.get()
+                loop = asyncio.get_event_loop()
+                logger.info(f'Awaiting data from instruction queue')
+                data = await loop.run_in_executor(None,self.queue.get)
                 logger.info(f"Processing data from queue: {data}")
 
                 # Process the update (e.g., update instructions or voice)
                 await self.update_session(data)
 
-                # Mark the queue task as done
-                self.queue.task_done()
+                # # Mark the queue task as done
+                # self.queue.task_done()
             except Exception as e:
                 logger.error(f"Error processing queue data: {e}")
 
@@ -190,13 +193,15 @@ class RealtimeKitAgent:
 
             self.channel.on("stream_message", on_stream_message)
 
+            # Start queue processing
+            asyncio.create_task(self.process_queue()).add_done_callback(log_exception)
+
             logger.info("Waiting for remote user to join")
             self.subscribe_user = await wait_for_remote_user(self.channel)
             logger.info(f"Subscribing to user {self.subscribe_user}")
             await self.channel.subscribe_audio(self.subscribe_user)
 
-             # Start queue processing
-            asyncio.create_task(self.process_queue()).add_done_callback(log_exception)
+            
 
             disconnected_future = asyncio.Future[None]()
             self.channel.on(
